@@ -26,17 +26,36 @@
                 </div>
 
                 <div class="dashboard">
-                    <div class="chart-container">
-                        <canvas id="temperatureChart"></canvas>
+                    <div class="chart-controls">
+                        <div class="time-range-control">
+                            <label>时间范围：</label>
+                            <input type="range" id="timeRangeSlider" min="10" max="100" value="50">
+                            <span id="timeRangeValue">50 条数据</span>
+                        </div>
                     </div>
-                    <div class="chart-container">
-                        <canvas id="humidityChart"></canvas>
+
+                    <div class="chart-wrapper">
+                        <div class="chart-container">
+                            <canvas id="temperatureChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <div class="chart-container">
+                            <canvas id="humidityChart"></canvas>
+                        </div>
                     </div>
                 </div>
 
                 <div class="data-section">
                     <div class="data-header">
-                        <h2>实时数据</h2>
+                        <div class="data-controls">
+                            <h2>实时数据</h2>
+                            <div class="data-client-selector">
+                                <select id="dataClientSelector" onchange="handleDataClientSelection(this.value)">
+                                    <option value="all">所有客户端</option>
+                                </select>
+                            </div>
+                        </div>
                         <div class="pagination">
                             <button id="prevPage" class="page-btn"><i class="fas fa-chevron-left"></i></button>
                             <span id="pageInfo">第 1 页</span>
@@ -52,7 +71,6 @@
                                     <th>客户端</th>
                                     <th>温度(°C)</th>
                                     <th>湿度(%)</th>
-                                    <th>状态</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -91,30 +109,73 @@
         // 初始化Socket.IO连接
         const socket = io();
 
-        // 初始化默认图表
+        // 修改图表配置
+        const chartOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: {
+                    display: true,
+                    text: '温度趋势图'
+                },
+                legend: {
+                    position: 'top',
+                }
+            },
+            scales: {
+                x: {
+                    display: true,
+                    title: {
+                        display: true,
+                        text: '时间'
+                    },
+                    ticks: {
+                        maxRotation: 45,
+                        minRotation: 45
+                    },
+                    grid: {
+                        display: true,
+                        drawOnChartArea: true
+                    }
+                },
+                y: {
+                    display: true,
+                    title: {
+                        display: true,
+                        text: '数值'
+                    },
+                    beginAtZero: false,
+                    ticks: {
+                        stepSize: 0.5,
+                        callback: function(value) {
+                            return value.toFixed(1);
+                        }
+                    },
+                    grid: {
+                        display: true,
+                        drawOnChartArea: true,
+                        color: 'rgba(0, 0, 0, 0.1)'
+                    }
+                }
+            },
+            layout: {
+                padding: {
+                    left: 15,
+                    right: 15,
+                    top: 15,
+                    bottom: 15
+                }
+            }
+        };
+
+        // 初始化图表时使用这些选项
         const tempChart = new Chart(document.getElementById('temperatureChart').getContext('2d'), {
             type: 'line',
             data: {
                 labels: [],
                 datasets: []
             },
-            options: {
-                responsive: true,
-                plugins: {
-                    title: {
-                        display: true,
-                        text: '温度趋势图'
-                    },
-                    legend: {
-                        position: 'top',
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: false
-                    }
-                }
-            }
+            options: chartOptions
         });
 
         const humidChart = new Chart(document.getElementById('humidityChart').getContext('2d'), {
@@ -124,19 +185,12 @@
                 datasets: []
             },
             options: {
-                responsive: true,
+                ...chartOptions,
                 plugins: {
+                    ...chartOptions.plugins,
                     title: {
-                        display: true,
+                        ...chartOptions.plugins.title,
                         text: '湿度趋势图'
-                    },
-                    legend: {
-                        position: 'top',
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: false
                     }
                 }
             }
@@ -148,13 +202,15 @@
             list.innerHTML = '';
             
             clients.forEach((value, clientId) => {
-                const item = document.createElement('div');
-                item.className = 'online-client-item';
-                item.innerHTML = `
-                    <span class="status-icon online"></span>
-                    <span class="client-name">${clientId}</span>
-                `;
-                list.appendChild(item);
+                if (value.online) {  // 只显示在线的客户端
+                    const item = document.createElement('div');
+                    item.className = 'online-client-item';
+                    item.innerHTML = `
+                        <span class="status-icon online"></span>
+                        <span class="client-name">${clientId}</span>
+                    `;
+                    list.appendChild(item);
+                }
             });
         }
 
@@ -182,9 +238,15 @@
         // 更新表格数据
         function updateTable() {
             const tbody = document.getElementById('sensorData').getElementsByTagName('tbody')[0];
+            let filteredData = allData;
+            
+            if (selectedDataClient !== 'all') {
+                filteredData = allData.filter(data => data.client_id === selectedDataClient);
+            }
+            
             const start = (currentPage - 1) * rowsPerPage;
             const end = start + rowsPerPage;
-            const pageData = allData.slice(start, end);
+            const pageData = filteredData.slice(start, end);
             
             tbody.innerHTML = '';
             pageData.forEach(data => {
@@ -194,16 +256,15 @@
                     <td>${data.client_id}</td>
                     <td>${data.temperature}</td>
                     <td>${data.humidity}</td>
-                    <td><span class="status-badge online">在线</span></td>
                 `;
             });
             
             document.getElementById('pageInfo').textContent = 
-                `第 ${currentPage} 页 / 共 ${Math.ceil(allData.length / rowsPerPage)} 页`;
+                `第 ${currentPage} 页 / 共 ${Math.ceil(filteredData.length / rowsPerPage)} 页`;
             
             document.getElementById('prevPage').disabled = currentPage === 1;
             document.getElementById('nextPage').disabled = 
-                currentPage >= Math.ceil(allData.length / rowsPerPage);
+                currentPage >= Math.ceil(filteredData.length / rowsPerPage);
         }
 
         // 显示通知
@@ -230,6 +291,14 @@
         }
 
         // 修改客户端状态变化处理
+        socket.on('connect', function() {
+            console.log('Connected to server');
+        });
+
+        socket.on('disconnect', function() {
+            console.log('Disconnected from server');
+        });
+
         socket.on('client_status', function(data) {
             const {client_id, status, timestamp} = data;
             
@@ -237,87 +306,111 @@
                 if (!clients.has(client_id)) {
                     clients.set(client_id, {
                         data: [],
-                        color: getRandomColor()
+                        color: getRandomColor(),
+                        online: true
                     });
-                    // 更新客户端选择器
                     updateClientSelector();
+                } else {
+                    clients.get(client_id).online = true;
                 }
                 showNotification(`${client_id} 已连接`, 'success');
             } else if (status === 'offline') {
                 if (clients.has(client_id)) {
-                    clients.delete(client_id);
-                    // 更新客户端选择器
-                    updateClientSelector();
+                    clients.get(client_id).online = false;
+                    showNotification(`${client_id} 已断开连接`, 'warning');
                 }
-                showNotification(`${client_id} 已断开连接`, 'warning');
             }
             
-            // 更新在线客户端列表
             updateOnlineClientsList();
-            // 更新状态历史
             addStatusHistory(client_id, status === 'online', timestamp);
-            // 更新图表
-            updateCharts();
         });
 
         // 更新客户端选择器
         function updateClientSelector() {
             const selector = document.getElementById('clientSelector');
+            const dataSelector = document.getElementById('dataClientSelector');
             const currentValue = selector.value;
-            selector.innerHTML = '<option value="all">所有客户端</option>';
+            
+            selector.innerHTML = '';
+            dataSelector.innerHTML = '<option value="all">所有客户端</option>';
+            
+            let firstClient = null;
             
             clients.forEach((value, clientId) => {
+                // 更新图表选择器
                 const option = document.createElement('option');
                 option.value = clientId;
                 option.textContent = clientId;
                 selector.appendChild(option);
+                
+                // 更新数据选择器
+                const dataOption = document.createElement('option');
+                dataOption.value = clientId;
+                dataOption.textContent = clientId;
+                dataSelector.appendChild(dataOption);
+                
+                if (!firstClient) firstClient = clientId;
             });
 
-            // 保持当前选择（如果客户端还存在）
-            if (currentValue === 'all' || clients.has(currentValue)) {
+            if (clients.has(currentValue)) {
                 selector.value = currentValue;
-            } else {
-                selector.value = 'all';
-                selectedClient = 'all';
+                selectedClient = currentValue;
+            } else if (firstClient) {
+                selector.value = firstClient;
+                selectedClient = firstClient;
             }
+            
+            updateCharts();
         }
 
         // 修改图表更新函数
         function updateCharts() {
-            // 清除现有数据
-            tempChart.data.labels = [];
-            humidChart.data.labels = [];
-            tempChart.data.datasets = [];
-            humidChart.data.datasets = [];
+            const client = clients.get(selectedClient);
+            if (!client || client.data.length === 0) return;
 
-            // 根据选择的客户端添加数据集
-            clients.forEach((client, clientId) => {
-                if (selectedClient === 'all' || selectedClient === clientId) {
-                    if (client.data.length > 0) {
-                        const tempDataset = {
-                            label: `${clientId} 温度`,
-                            data: client.data.slice().reverse().map(d => d.temperature),
-                            borderColor: client.color,
-                            tension: 0.4
-                        };
-                        const humidDataset = {
-                            label: `${clientId} 湿度`,
-                            data: client.data.slice().reverse().map(d => d.humidity),
-                            borderColor: client.color,
-                            tension: 0.4
-                        };
+            const displayCount = parseInt(timeRangeSlider.value);
+            
+            // 获取最新的 N 条数据
+            const displayData = client.data.slice(0, displayCount).reverse();
+            
+            // 更新图表数据
+            const timestamps = displayData.map(d => d.timestamp);
+            const temperatures = displayData.map(d => d.temperature);
+            const humidities = displayData.map(d => d.humidity);
 
-                        tempChart.data.datasets.push(tempDataset);
-                        humidChart.data.datasets.push(humidDataset);
+            // 计算数据范围以设置合适的Y轴范围
+            const tempMin = Math.min(...temperatures);
+            const tempMax = Math.max(...temperatures);
+            const humidMin = Math.min(...humidities);
+            const humidMax = Math.max(...humidities);
 
-                        // 添加时间标签（只需要一个客户端的时间标签）
-                        if (tempChart.data.labels.length === 0) {
-                            tempChart.data.labels = client.data.slice().reverse().map(d => d.timestamp);
-                            humidChart.data.labels = client.data.slice().reverse().map(d => d.timestamp);
-                        }
-                    }
-                }
-            });
+            // 设置图表数据
+            tempChart.data.labels = timestamps;
+            tempChart.data.datasets = [{
+                label: `${selectedClient} 温度`,
+                data: temperatures,
+                borderColor: client.color,
+                tension: 0.4,
+                pointRadius: 3
+            }];
+
+            humidChart.data.labels = timestamps;
+            humidChart.data.datasets = [{
+                label: `${selectedClient} 湿度`,
+                data: humidities,
+                borderColor: client.color,
+                tension: 0.4,
+                pointRadius: 3
+            }];
+
+            // 设置Y轴范围，增加上下边距
+            const tempPadding = (tempMax - tempMin) * 0.2;
+            const humidPadding = (humidMax - humidMin) * 0.2;
+            
+            tempChart.options.scales.y.min = Math.floor(tempMin - tempPadding);
+            tempChart.options.scales.y.max = Math.ceil(tempMax + tempPadding);
+            humidChart.options.scales.y.min = Math.floor(humidMin - humidPadding);
+            humidChart.options.scales.y.max = Math.ceil(humidMax + humidPadding);
 
             tempChart.update();
             humidChart.update();
@@ -325,8 +418,12 @@
 
         // 修改传感器数据处理函数
         socket.on('sensor_data', function(data) {
+            console.log('Received sensor_data:', data);
             const clientId = data.client_id;
-            if (!clients.has(clientId)) return;
+            if (!clients.has(clientId)) {
+                console.log('Client not found:', clientId);
+                return;
+            }
 
             const client = clients.get(clientId);
             client.data.unshift(data);
@@ -336,6 +433,7 @@
             allData.unshift(data);
             if (allData.length > 100) allData.pop();
 
+            console.log('Updating charts for client:', clientId);
             // 更新图表和表格
             if (selectedClient === 'all' || selectedClient === clientId) {
                 updateCharts();
@@ -370,6 +468,34 @@
 
         // 初始化选择
         selectedClient = 'all';
+
+        // 添加时间范围控制函数
+        function updateTimeRange(minutes) {
+            const now = new Date().getTime();
+            const rangeStart = minutes === 'all' ? 0 : now - minutes * 60 * 1000;
+            
+            tempChart.options.scales.x.min = rangeStart;
+            humidChart.options.scales.x.min = rangeStart;
+            
+            updateCharts();
+        }
+
+        // 添加时间范围控制
+        const timeRangeSlider = document.getElementById('timeRangeSlider');
+        const timeRangeValue = document.getElementById('timeRangeValue');
+
+        timeRangeSlider.addEventListener('input', function() {
+            timeRangeValue.textContent = `${this.value} 条数据`;
+            updateCharts();
+        });
+
+        // 添加数据客户端选择处理
+        let selectedDataClient = 'all';
+
+        function handleDataClientSelection(clientId) {
+            selectedDataClient = clientId;
+            updateTable();
+        }
     </script>
 </body>
 </html> 

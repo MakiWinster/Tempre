@@ -26,6 +26,7 @@ class SensorThread(QThread):
         self.client_id = None
         self.sending_data = True
         self.heartbeat_timer = None
+        self.heartbeat_failed_count = 0
         
         # 创建 Socket.IO 客户端
         self.sio = socketio.Client(
@@ -42,14 +43,34 @@ class SensorThread(QThread):
         self.sio.on('disconnect', self.on_disconnect)
         self.sio.on('connect_error', self.on_connect_error)
         self.sio.on('client_id_assigned', self.on_client_id_assigned)
+        self.sio.on('ping', self.handle_ping)
 
     def send_heartbeat(self):
         try:
             if self.connected and self.client_id:
-                self.sio.emit('heartbeat', {'client_id': self.client_id})
+                self.sio.emit('heartbeat', {'client_id': self.client_id}, callback=self.handle_heartbeat_response)
                 self.log_message.emit("发送心跳信号")
         except Exception as e:
+            self.handle_heartbeat_failure()
             self.log_message.emit(f"心跳发送失败: {e}")
+
+    def handle_heartbeat_response(self, response):
+        if response and response.get('status') == 'ok':
+            self.heartbeat_failed_count = 0
+        else:
+            self.handle_heartbeat_failure()
+
+    def handle_heartbeat_failure(self):
+        self.heartbeat_failed_count += 1
+        if self.heartbeat_failed_count >= 3:  # 连续3次心跳失败
+            self.log_message.emit("心跳检测失败，断开连接")
+            self.connected = False
+            self.connection_changed.emit(False)
+            self.stop_heartbeat()
+            try:
+                self.sio.disconnect()
+            except:
+                pass
 
     def start_heartbeat(self):
         if not self.heartbeat_timer:
@@ -66,6 +87,14 @@ class SensorThread(QThread):
         self.sending_data = not self.sending_data
         status = "开启" if self.sending_data else "停止"
         self.log_message.emit(f"数据发送已{status}")
+        
+        if self.sending_data:
+            # 如果开始发送数据，发送恢复通知
+            try:
+                self.sio.emit('client_resume', {'client_id': self.client_id})
+                self.log_message.emit("发送恢复数据传输通知")
+            except Exception as e:
+                self.log_message.emit(f"发送恢复通知失败: {e}")
 
     def run(self):
         self.running = True
@@ -88,12 +117,14 @@ class SensorThread(QThread):
 
     def on_connect(self):
         self.log_message.emit("Socket.IO已连接，请求客户端ID...")
+        self.heartbeat_failed_count = 0
         self.sio.emit('client_connect', {})
 
     def on_disconnect(self):
         self.connected = False
         self.connection_changed.emit(False)
         self.stop_heartbeat()
+        self.heartbeat_failed_count = 0
         self.log_message.emit("已断开连接")
 
     def on_client_id_assigned(self, data):
@@ -135,6 +166,7 @@ class SensorThread(QThread):
             except:
                 pass
         self.connected = False
+        self.heartbeat_failed_count = 0
         self.connection_changed.emit(False)
 
     def on_connect_error(self, error):
@@ -143,6 +175,14 @@ class SensorThread(QThread):
         self.connected = False
         self.connection_changed.emit(False)
         self.stop_heartbeat()
+
+    def handle_ping(self, data):
+        if self.connected and self.sending_data and data.get('client_id') == self.client_id:
+            try:
+                self.sio.emit('pong', {'client_id': self.client_id})
+                self.log_message.emit("响应服务器心跳")
+            except Exception as e:
+                self.log_message.emit(f"心跳响应失败: {e}")
 
 class SensorDisplay(QWidget):
     def __init__(self, title, unit):

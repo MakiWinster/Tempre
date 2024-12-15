@@ -19,7 +19,48 @@ class SensorServer:
         self.max_history = 100  # 最多保存100条历史记录
         self.client_count = 0  # 用于生成客户端ID
         self.session_to_client = {}  # 存储会话ID到客户端ID的映射
-        self.heartbeats = {}  # 存储客户端心跳信息
+        self.heartbeat_fails = {}  # 存储心跳失败次数
+
+    def has_active_clients(self):
+        # 检查是否有在线且正在发送数据的客户端
+        return any(client["online"] for client in self.clients.values())
+
+    def check_heartbeats(self):
+        # 如果没有在线客户端，不执行心跳检查
+        if not self.has_active_clients():
+            print("No active clients, skipping heartbeat check")
+            return
+
+        current_time = datetime.now()
+        for client_id, client_info in list(self.clients.items()):
+            if client_info["online"]:
+                try:
+                    print(f"Sending ping to client {client_id}")
+                    # 发送ping并等待响应
+                    socketio.emit('ping', {'client_id': client_id})
+                    
+                    # 更新心跳失败计数
+                    if client_id not in self.heartbeat_fails:
+                        self.heartbeat_fails[client_id] = 0
+                    self.heartbeat_fails[client_id] += 1
+                    
+                    # 检查心跳失败次数
+                    if self.heartbeat_fails[client_id] >= 3:
+                        print(f"Client {client_id} heartbeat timeout after 3 failures")
+                        self.clients[client_id]["online"] = False
+                        socketio.emit('client_status', {
+                            'client_id': client_id,
+                            'status': 'offline',
+                            'timestamp': current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                            'message': '心跳检测失败3次，客户端离线'
+                        }, broadcast=True)
+                        self.heartbeat_fails[client_id] = 0
+                except Exception as e:
+                    print(f"Error sending ping to {client_id}: {e}")
+
+    def handle_pong(self, client_id):
+        if client_id in self.heartbeat_fails:
+            self.heartbeat_fails[client_id] = 0
 
     def get_or_create_client_id(self, session_id):
         if session_id in self.session_to_client:
@@ -31,19 +72,22 @@ class SensorServer:
             return new_id
 
     def add_client(self, client_id):
-        print(f"Adding client: {client_id}")  # 调试日志
+        print(f"Adding client: {client_id}")
         if client_id not in self.clients:
             self.clients[client_id] = {
                 "online": True,
                 "last_seen": datetime.now()
             }
+            self.heartbeat_fails[client_id] = 0
             return True
         return False
 
     def remove_client(self, client_id):
-        print(f"Removing client: {client_id}")  # 调试日志
+        print(f"Removing client: {client_id}")
         if client_id in self.clients:
             self.clients[client_id]["online"] = False
+            if client_id in self.heartbeat_fails:
+                del self.heartbeat_fails[client_id]
             return True
         return False
 
@@ -70,19 +114,18 @@ class SensorServer:
         return self.clients
 
     def update_heartbeat(self, client_id):
-        self.heartbeats[client_id] = datetime.now()
-
-    def check_heartbeats(self):
-        current_time = datetime.now()
-        for client_id, last_beat in list(self.heartbeats.items()):
-            if (current_time - last_beat).seconds > 9:  # 9秒没有心跳就认为离线
-                if client_id in self.clients and self.clients[client_id]["online"]:
-                    self.remove_client(client_id)
-                    socketio.emit('client_status', {
-                        'client_id': client_id,
-                        'status': 'offline',
-                        'timestamp': current_time.strftime("%Y-%m-%d %H:%M:%S")
-                    }, broadcast=True)
+        if client_id in self.clients:
+            self.heartbeats[client_id] = datetime.now()
+            self.heartbeat_fails[client_id] = 0  # 重置失败计数
+            if not self.clients[client_id]["online"]:
+                # 如果客户端之前离线，现在发送心跳，则重新上线
+                self.clients[client_id]["online"] = True
+                socketio.emit('client_status', {
+                    'client_id': client_id,
+                    'status': 'online',
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'message': '心跳恢复，客户端重新上线'
+                }, broadcast=True)
 
 # 创建服务器实例
 sensor_server = SensorServer()
@@ -138,6 +181,29 @@ def handle_heartbeat(data):
     if client_id:
         sensor_server.update_heartbeat(client_id)
         return {'status': 'ok'}
+
+@socketio.on('pong')
+def handle_pong(data):
+    client_id = data.get('client_id')
+    if client_id:
+        sensor_server.handle_pong(client_id)
+        return {'status': 'ok'}
+
+@socketio.on('client_resume')
+def handle_client_resume(data):
+    client_id = data.get('client_id')
+    if client_id and client_id in sensor_server.clients:
+        print(f"Client {client_id} resuming data transmission")
+        sensor_server.clients[client_id]["online"] = True
+        sensor_server.heartbeat_fails[client_id] = 0
+        socketio.emit('client_status', {
+            'client_id': client_id,
+            'status': 'online',
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'message': '客户端恢复数据传输'
+        }, broadcast=True)
+        return {'status': 'ok'}
+    return {'status': 'error'}
 
 def check_heartbeats_task():
     while True:

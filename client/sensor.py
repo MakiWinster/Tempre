@@ -15,19 +15,13 @@ class SensorSimulator:
         """
         self.temp_range = temp_range
         self.humidity_range = humidity_range
-        # 保存上一次的数据，用于生成平滑的数据变化
         self._last_temp = (temp_range[0] + temp_range[1]) / 2
         self._last_humidity = (humidity_range[0] + humidity_range[1]) / 2
         
     def get_sensor_data(self) -> Dict[str, float]:
-        """获取模拟的传感器数据
-        
-        Returns:
-            包含温度和湿度数据的字典
-        """
         # 生成新的温度值，与上一次的值相差不超过0.5度
         new_temp = self._last_temp + random.uniform(-0.5, 0.5)
-        # 确保温度在指定范围内
+        # 温度在指定范围内
         new_temp = max(self.temp_range[0], min(self.temp_range[1], new_temp))
         self._last_temp = new_temp
         

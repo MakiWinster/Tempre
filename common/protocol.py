@@ -15,7 +15,7 @@ class Protocol:
     @staticmethod
     def pack(msg_type: MessageType, client_id: str, data: dict = None) -> bytes:
         """打包消息
-        
+    
         Args:
             msg_type: 消息类型
             client_id: 客户端ID
